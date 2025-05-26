@@ -26,7 +26,7 @@ A professional tool for safe and sustainable Instagram follower growth using met
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/instagram-growth-tool.git
+git clone https://github.com/LaClub-Ai/instagram-growth-tool.git
 cd instagram-growth-tool
 python -m venv venv
 source venv/bin/activate # Linux/Mac
