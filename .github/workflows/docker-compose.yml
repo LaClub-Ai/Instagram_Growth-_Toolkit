@@ -1,0 +1,125 @@
+services:
+  # سرویس اصلی برنامه
+  app:
+    image: ghcr.io/yourusername/instagram-growth-tool:latest
+    container_name: instagram-growth-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - COOLIFY_INSTANCE_URL=http://31.97.41.252:8000
+      - COOLIFY_API_KEY=${COOLIFY_API_KEY}
+      - DATABASE_URL=postgresql://app_user:${DB_PASSWORD}@db:5432/app_db
+      - REDIS_URL=redis://redis:6379/0
+      - INSTAGRAM_USER="mr.lopez121"
+      - INSTAGRAM_PASS="s2014==S"
+    volumes:
+      - app-data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - coolify-network
+
+  # سرویس دیتابیس PostgreSQL
+  db:
+    image: postgres:15-alpine
+    container_name: instagram-growth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: app_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d app_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - coolify-network
+
+  # سرویس Redis
+  redis:
+    image: redis:7-alpine
+    container_name: instagram-growth-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - coolify-network
+
+  # سرویس Celery Worker
+  worker:
+    image: ghcr.io/yourusername/instagram-growth-tool:latest
+    container_name: instagram-growth-worker
+    restart: unless-stopped
+    command: celery -A src.core.celery_app worker --loglevel=info -P gevent -c 10
+    environment:
+      - DATABASE_URL=postgresql://app_user:${DB_PASSWORD}@db:5432/app_db
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      - db
+      - redis
+    networks:
+      - coolify-network
+
+  # سرویس Celery Beat
+  beat:
+    image: ghcr.io/yourusername/instagram-growth-tool:latest
+    container_name: instagram-growth-beat
+    restart: unless-stopped
+    command: celery -A src.core.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://app_user:${DB_PASSWORD}@db:5432/app_db
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      - db
+    networks:
+      - coolify-network
+
+volumes:
+  app-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/instagram-growth/app-data
+  db-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/instagram-growth/db-data
+  redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/instagram-growth/redis-data
+
+networks:
+  coolify-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
