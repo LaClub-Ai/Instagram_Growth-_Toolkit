@@ -2,7 +2,7 @@
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![CI/CD](https://github.com/yourusername/instagram-growth-tool/actions/workflows/deploy.yml/badge.svg)
+![CI/CD](https://github.com/LaClub-Ai/instagram-growth-tool/actions/workflows/deploy.yml/badge.svg)
 
 A professional tool for safe and sustainable Instagram follower growth using methods that are fully compliant with Instagram rules.
 
