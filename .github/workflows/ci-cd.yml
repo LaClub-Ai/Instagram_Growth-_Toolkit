@@ -1,0 +1,295 @@
+name: Instagram Growth Toolkit CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # اجرای روزانه برای بررسی امنیت و dependency ها
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  # بررسی کیفیت کد و formatting
+  code-quality:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: نصب Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: نصب ابزارهای کیفیت کد
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort mypy bandit safety
+
+      - name: بررسی فرمت کد با Black
+        run: black --check --diff .
+
+      - name: بررسی import ordering با isort
+        run: isort --check-only --diff .
+
+      - name: بررسی PEP8 با Flake8
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: بررسی Type Hints با MyPy
+        run: mypy . --ignore-missing-imports || echo "MyPy warnings found"
+
+      - name: بررسی امنیت کد با Bandit
+        run: bandit -r . -f json -o bandit-report.json || true
+
+      - name: بررسی امنیت dependencies با Safety
+        run: safety check || echo "Security warnings found"
+
+      - name: آپلود گزارsh امنیت
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+
+  # اجرای تست‌ها
+  test:
+    name: Run Tests
+    runs-on: ${{ matrix.os }}
+    needs: code-quality
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: نصب Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: نصب dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-mock
+
+      - name: اجرای Unit Tests
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: آپلود Coverage گزارش
+        uses: codecov/codecov-action@v3
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.9'
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  # بررسی Dependencies و Vulnerabilities
+  security-scan:
+    name: Security & Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: نصب Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: نصب pip-audit برای بررسی vulnerabilities
+        run: pip install pip-audit
+
+      - name: بررسی Vulnerabilities در Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip-audit --format=json --output=audit-report.json || true
+
+      - name: آپلود گزارش Audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: audit-report.json
+
+  # ساخت Docker Image
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [code-quality, test]
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login به Docker Hub
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            laclub-ai/instagram-growth-toolkit
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build و Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ساخت Package و Release
+  build-package:
+    name: Build Python Package
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: نصب Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: نصب build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: بررسی package
+        run: twine check dist/*
+
+      - name: آپلود artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+  # Deploy به PyPI (در صورت نیاز)
+  deploy-pypi:
+    name: Deploy to PyPI
+    runs-on: ubuntu-latest
+    needs: build-package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    steps:
+      - name: دانلود package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Publish به PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          username: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  # Performance و Load Testing
+  performance-test:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: نصب Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: نصب dependencies و performance tools
+        run: |
+          pip install -r requirements.txt
+          pip install pytest-benchmark memory-profiler
+
+      - name: اجرای Performance Tests
+        run: |
+          python -m pytest tests/performance/ --benchmark-json=benchmark.json || true
+
+      - name: آپلود Performance Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: benchmark.json
+
+  # Documentation Build
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout کردن کد
+        uses: actions/checkout@v4
+
+      - name: نصب Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: نصب Sphinx و dependencies
+        run: |
+          pip install sphinx sphinx-rtd-theme
+          pip install -r requirements.txt
+
+      - name: Build Documentation
+        run: |
+          cd docs
+          sphinx-build -b html . _build/html
+
+      - name: Deploy به GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs/_build/html
+
+  # Notification در صورت خطا
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [code-quality, test, security-scan, docker-build]
+    if: failure()
+    steps:
+      - name: ارسال اطلاع‌رسانی
+        run: |
+          echo "⚠️ CI/CD Pipeline Failed!"
+          echo "Check the logs for more details."
+          # اینجا می‌تونید integration با Slack, Discord یا ایمیل اضافه کنید
