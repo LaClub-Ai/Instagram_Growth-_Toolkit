@@ -1,0 +1,6 @@
+from instagrapi import Client
+
+def get_client(username, password):
+    cl = Client()
+    cl.login(username, password)
+    return cl
