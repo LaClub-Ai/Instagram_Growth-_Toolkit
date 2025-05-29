@@ -1,0 +1,109 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.prod
+    container_name: insta-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - insta-network
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: insta-backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - DB_URL=postgresql://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://redis:6379/0
+      - COOLIFY_API_KEY=${COOLIFY_API_KEY}
+    volumes:
+      - backend-data:/app/data
+    networks:
+      - insta-network
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: insta-worker
+    restart: unless-stopped
+    command: celery -A app.core.worker worker --loglevel=info -P gevent -c 4
+    environment:
+      - DB_URL=postgresql://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://redis:6379/0
+      - COOLIFY_API_KEY=${COOLIFY_API_KEY}
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      - db
+      - redis
+    networks:
+      - insta-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: insta-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+    networks:
+      - insta-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: insta-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+    networks:
+      - insta-network
+
+  traefik:
+    image: traefik:v2.10
+    container_name: insta-traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - insta-network
+
+volumes:
+  backend-data:
+  postgres-data:
+  redis-data:
+
+networks:
+  insta-network:
+    driver: bridge

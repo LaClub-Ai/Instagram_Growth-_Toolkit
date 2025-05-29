@@ -143,6 +143,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+          # Make sure DOCKER_USERNAME and DOCKER_PASSWORD are set in your repository secrets at https://github.com/<owner>/<repo>/settings/secrets/actions
 
       - name: Extract metadata
         id: meta
